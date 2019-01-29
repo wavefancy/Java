@@ -7,9 +7,11 @@
 package cpsm;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.text.DecimalFormat;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.Map;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.docopt.Docopt;
 
@@ -19,7 +21,7 @@ import org.docopt.Docopt;
  */
 public class CPSM {
     
-    private static LinkedList<String[]> ContentList = new LinkedList<>();
+    private static final LinkedList<String[]> ContentList = new LinkedList<>();
     private static double [] P1_Array = null;
     private static double [] P2_Array = null;
     private static int[] pv_index = null;       //Column index for p values.
@@ -27,24 +29,32 @@ public class CPSM {
     private static int[]  POS_Array = null;
     private static int[][] WINDON_BOUNDARY = null;
     private static int half_windown_size = 30 * 1000;
+    private static int Permute_P1 = -1;
+    private static int Permute_P2 = -1;
+    private static double[] results = null;
+    private static final DecimalFormat formator = new DecimalFormat(".####");
+    
     
     private static final String DOC =
                 "CPSM method for checking the shared driver snps between a pair of GWAS.\n"
                 + "\n"
                 + "Usage:\n"
-                + "  CPSM -p int,int -b int [--half_window_size int]\n"
+                + "  CPSM -p int,int -b int -m int [--p1 int | --p2 int] [--half_window_size int] [-t cpus]\n"
                 + "  CPSM (-h | --help)\n"
                 + "  CPSM --version\n"
                 + "\n"
                 + "---------------------------\n"
                 + "Read data from stdin, output results to stdout.\n"
-                + "Add additional columns for CPSM scores.\n"
+                + "Each non-title row is a result, multiple rows for permutation test.\n"
                 + "---------------------------\n"
                 + "\n"
                 + "Options:\n"
                 + "  -p int,int    Column index for pvalues, two ints, index starts from 1.!\n"
                 + "  -b int        Column index for physical position.\n"
-                + "  --half_window_size int    Half window size in kb, default 30. "
+                + "  -m int        Column index for mark id, output as title.\n"
+                + "  --half_window_size int    Half window size in kb, default 30. \n"
+                + "  --p1 int      Permute the first summary int times, close the output for original test.\n"
+                + "  --p2 int      Permute the second summary int times, close the output for original test.\n"
                 + "  -t cpus       Number of cpus for computing.\n"
                 + "  -h --help     Show this screen.\n"
                 + "  --version     Show version.\n"
@@ -102,6 +112,19 @@ public class CPSM {
             return top/bottom;
         }
     }
+    
+    private static void outputAllscores(){
+        IntStream.range(0, WINDON_BOUNDARY.length)
+                .parallel()
+                .forEach(i -> {
+                    results[i] = getSingleScore(i, WINDON_BOUNDARY[i][0], WINDON_BOUNDARY[i][1]);
+                });
+        
+        String s = Arrays.stream(results)
+                .mapToObj(i -> formator.format(i))
+                .collect(Collectors.joining("\t"));
+        System.out.println(s);
+    }
 
     /**
      * @param args the command line arguments
@@ -124,10 +147,19 @@ public class CPSM {
         if(opts.get("--half_window_size") != null){
                half_windown_size = Integer.parseInt((String) opts.get("--half_window_size")) * 1000;
         }
+        if(opts.get("--p1") != null){
+               Permute_P1 = Integer.parseInt((String) opts.get("--p1"));
+        }
+        if(opts.get("--p2") != null){
+               Permute_P2 = Integer.parseInt((String) opts.get("--p2"));
+        }
+        if(opts.get("-t") != null){   
+            System.setProperty("java.util.concurrent.ForkJoinPool.common.parallelism", (String) opts.get("--p2"));
+        }
+        int MARKID_COL = Integer.parseInt((String) opts.get("-m"))-1;
         
-   
+        
         BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
-            final LinkedList<String[]> tempEdgesList = new LinkedList();
             in.lines()
               .filter(s -> s.length() > 0)
               .sequential() //*** Very Important **** Here must to be sequential, because we will update index.
@@ -138,17 +170,40 @@ public class CPSM {
         
         //Generate data for computing.
         P1_Array = ContentList.stream()
-                .mapToDouble(s -> Double.parseDouble(s[pv_index[0]]))
+                .mapToDouble(s -> Math.log10(Double.parseDouble(s[pv_index[0]])))
                 .toArray();
         P2_Array = ContentList.stream()
-                .mapToDouble(s -> Double.parseDouble(s[pv_index[1]]))
+                .mapToDouble(s -> Math.log10(Double.parseDouble(s[pv_index[1]])))
                 .toArray();
         POS_Array = ContentList.stream()
                 .mapToInt(s -> Integer.parseInt(s[POS_index]))
                 .toArray();
-                
+        results = new double[P1_Array.length];
+        
+        //output title.
+        String mm = ContentList.stream()
+                .map(s->s[MARKID_COL])
+//                .map(Object::toString)
+                .collect(Collectors.joining("\t"));
+        System.out.println(mm);
+        ContentList.clear();
+        
+      
         setWindowBoundary();
         
+        if (Permute_P1 > 0) {
+            for (int i = 0; i < Permute_P1; i++) {
+                //shuffle array in place
+                FisherYatesArrayShuffle.Shuffle(P1_Array);
+                outputAllscores();
+            }
+        }else if (Permute_P2 > 0) {
+            for (int i = 0; i < Permute_P2; i++) {
+                FisherYatesArrayShuffle.Shuffle(P2_Array);
+                outputAllscores();
+            }
+        }else{
+            outputAllscores();
+        }
     }
-    
 }
